@@ -4,6 +4,8 @@
 
 **[エクスプローラーを開く](https://shinichiwtnb.github.io/mepdg-explorer-public/)**
 
+**[Cloudflare版を開く（GitHub Pagesにアクセスできない場合）](https://mepdg-explorer.pages.dev/)**
+
 ログイン不要で、ブラウザーから利用できます。
 
 MEPDGの性能予測モデルについて、出力から必要な数式・変数・入力条件をたどる閲覧ツールです。
