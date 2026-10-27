@@ -35,7 +35,7 @@
 <script>
 'use strict';
 const raw=JSON.parse(document.getElementById('excel-data').textContent);
-const E=new Map(), V=new Map(), children=new Map(), relations=new Map(), backlinks=new Map(), all=new Map();
+const E=new Map(), V=new Map(), children=new Map(), graphChildren=new Map(), relations=new Map(), backlinks=new Map(), all=new Map();
 let modelCode='TD', model, tables, root, gaps=[], globalGaps=[];
 let selected,expanded=new Set(),direction='LR',emphasize=false,kindFilter='',scene={width:900,height:700,positions:new Map(),edges:[]},pan={x:18,y:10},scale=.87,mouseDown=null;
 const $=id=>document.getElementById(id), stage=$('stage'), svg=$('svg'),vp=$('viewport');
@@ -52,10 +52,17 @@ const kinds={
 };
 function loadModel(code){
  modelCode=code;model=raw.models[code];tables=model.sections;root=model.root;
- for(const map of [E,V,children,relations,backlinks,all])map.clear();
+ for(const map of [E,V,children,graphChildren,relations,backlinks,all])map.clear();
  for(const e of tables.equations){E.set(e['式_ID'],e);children.set(e['式_ID'],[]);all.set(e['式_ID'],e);}
  for(const v of tables.variables){V.set(v['変数_ID'],v);children.set(v['変数_ID'],v['生成式_ID']?[v['生成式_ID']]:[]);all.set(v['変数_ID'],v);}
  for(const rel of tables.connections){const id=rel['式_ID'],target=rel['入力変数_ID'];children.get(id).push(target);relations.set(id+'|'+target,rel);}
+ // Keep ledger records intact; the diagram combines each variable with its generating equation.
+ for(const id of all.keys()){
+   const node=graphId(id);if(graphChildren.has(node))continue;
+   const producer=V.get(node)?.['生成式_ID'];
+   const source=producer&&graphId(producer)===node?producer:node;
+   graphChildren.set(node,[...new Set((children.get(source)||[]).map(graphId))]);
+ }
  for(const [id,targets] of children)for(const target of targets){if(!backlinks.has(target))backlinks.set(target,[]);backlinks.get(target).push(id);}
  const outputs=[...new Set([model.root,...tables.variables.filter(v=>v['役割']==='最終出力').map(v=>v['変数_ID']),...model.roots])];
  $('rootJump').innerHTML=outputs.map(id=>`<option value="${esc(id)}">起点：${esc(label(id))} (${esc(id)})</option>`).join('')+'<option value="all">全出力・参照式を表示</option>';
@@ -72,7 +79,7 @@ function loadModel(code){
  $('equationJump').innerHTML='<option value="">数式を選ぶ…</option>'+[...E].map(([id,e])=>`<option value="${esc(id)}">${esc(id)} · ${esc(e['式名'])}</option>`).join('');
  $('legend').innerHTML=Object.entries(kinds).filter(([key])=>tables.variables.some(v=>v.classification.kind===key)).map(([key,c])=>`<button data-kind="${key}" aria-pressed="false"><i class="dot" style="background:${c.color}"></i>${c.label}</button>`).join('');
  $('legend').querySelectorAll('[data-kind]').forEach(b=>b.onclick=()=>{kindFilter=kindFilter===b.dataset.kind?'':b.dataset.kind;$('legend').querySelectorAll('[data-kind]').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.kind===kindFilter)));drawGraph();});
- expandDepth(2);
+ expandDepth(1);
 }
 function nodeKind(id){return V.get(id)?.classification.kind||'equation';}
 function nodeColors(id){return kinds[nodeKind(id)]||{label:'算出式',color:'#90a6bc',fill:'#233144'};}
@@ -85,8 +92,9 @@ function symbol(id){const d=all.get(id);return !d?'':typ(id)==='eq'?(V.get(d['�
 function status(id){return all.get(id)?.['状態']||'未登録';}
 function localGaps(id){let ids=[id];if(E.has(id))ids.push(E.get(id)['出力変数_ID']);if(V.has(id)&&V.get(id)['生成式_ID'])ids.push(V.get(id)['生成式_ID']);return gaps.filter(x=>ids.some(z=>(x['関連_ID']||'').split(/[,、／\s]+/).includes(z)));}
 function problem(id){return nodeKind(id)==='unknown'||/要調査|要確認|未確認|調査中|待ち/.test(status(id))||localGaps(id).length>0;}
-function activeRoots(){return root==='all'?model.roots:[root];}
-function visible(){const q=activeRoots().slice(),seen=new Map(q.map(id=>[id,0])), links=[], check=new Set();for(let i=0;i<q.length;i++){const id=q[i],depth=seen.get(id);if(!expanded.has(id))continue;for(const child of children.get(id)||[]){const key=id+'|'+child;if(!check.has(key)){links.push({from:id,to:child});check.add(key);}if(!seen.has(child)){seen.set(child,depth+1);q.push(child);}}}return {seen,links};}
+function graphId(id){const output=E.get(id)?.['出力変数_ID'];return V.get(output)?.['生成式_ID']===id?output:id;}
+function activeRoots(){return [...new Set((root==='all'?model.roots:[root]).map(graphId))];}
+function visible(){const q=activeRoots().slice(),seen=new Map(q.map(id=>[id,0])), links=[], check=new Set();for(let i=0;i<q.length;i++){const id=q[i],depth=seen.get(id);if(!expanded.has(id))continue;for(const child of graphChildren.get(id)||[]){const key=id+'|'+child;if(!check.has(key)){links.push({from:id,to:child});check.add(key);}if(!seen.has(child)){seen.set(child,depth+1);q.push(child);}}}return {seen,links};}
 const NODE_W=224,NODE_H=90,X_GAP=105,Y_GAP=21,margin=60;
 function computeLayout(){const {seen,links}=visible(),layers=new Map();let mx=0;for(const [id,d] of seen){if(!layers.has(d))layers.set(d,[]);layers.get(d).push(id);mx=Math.max(mx,d);}
 for(let pass=0;pass<3;pass++)for(let d=1;d<=mx;d++){const curr=layers.get(d)||[],before=layers.get(d-1)||[];const idx=new Map(before.map((v,i)=>[v,i]));curr.sort((a,b)=>{const sc=id=>{const pp=links.filter(e=>e.to===id&&idx.has(e.from)).map(e=>idx.get(e.from));return pp.length?pp.reduce((a,b)=>a+b,0)/pp.length:999};return sc(a)-sc(b)});}
@@ -96,10 +104,10 @@ return {positions:p,edges:links,width:baseW,height:baseH};}
 function svgEl(name,attrs={},parent=vp){const n=document.createElementNS('http://www.w3.org/2000/svg',name);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,v);parent.appendChild(n);return n;}
 function svgText(parent,x,y,txt,cls,extra={}){const n=svgEl('text',{x,y,class:cls,...extra},parent);n.textContent=txt;return n;}
 function shorten(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s;}
-function drawGraph(){scene=computeLayout();vp.replaceChildren();const selectedDirect=new Set([selected,...(children.get(selected)||[]),...(backlinks.get(selected)||[])]);
+function drawGraph(){scene=computeLayout();vp.replaceChildren();const selectedNode=graphId(selected);
 for(const e of scene.edges){const a=scene.positions.get(e.from),b=scene.positions.get(e.to);if(!a||!b)continue;let path;if(direction==='LR'){const x1=a.x+NODE_W,y1=a.y+NODE_H/2,x2=b.x,y2=b.y+NODE_H/2;const bend=Math.max(38,Math.abs(x2-x1)*.51);path=`M${x1},${y1} C${x1+bend},${y1} ${x2-bend},${y2} ${x2},${y2}`;}else{const x1=a.x+NODE_W/2,y1=a.y+NODE_H,x2=b.x+NODE_W/2,y2=b.y;const bend=Math.max(38,Math.abs(y2-y1)*.51);path=`M${x1},${y1} C${x1},${y1+bend} ${x2},${y2-bend} ${x2},${y2}`;}
-const focus=e.from===selected||e.to===selected;const dim=isDim(e.from)&&isDim(e.to);svgEl('path',{d:path,class:'graph-edge'+(focus?' focus':'')+(dim?' dim':''),'marker-end':focus?'url(#arrowfocus)':'url(#arrow)'});}
-for(const [id,p] of scene.positions){const eq=E.has(id),d=all.get(id),issue=problem(id),collapsed=(children.get(id)||[]).length>0&&!expanded.has(id),sel=selected===id;const g=svgEl('g',{class:'gnode node-shadow'+(sel?' sel':'')+(isDim(id)?' dim':''),transform:`translate(${p.x},${p.y})`,tabindex:'0',role:'button','aria-label':label(id)+' を表示または展開','data-id':id,'data-kind':nodeKind(id)});
+const focus=e.from===selectedNode||e.to===selectedNode;const dim=isDim(e.from)&&isDim(e.to);svgEl('path',{d:path,class:'graph-edge'+(focus?' focus':'')+(dim?' dim':''),'marker-end':focus?'url(#arrowfocus)':'url(#arrow)'});}
+for(const [id,p] of scene.positions){const eq=E.has(id),d=all.get(id),issue=problem(id),hasInputs=(graphChildren.get(id)||[]).length>0,collapsed=hasInputs&&!expanded.has(id),sel=selectedNode===id;const g=svgEl('g',{class:'gnode node-shadow'+(sel?' sel':'')+(isDim(id)?' dim':''),transform:`translate(${p.x},${p.y})`,tabindex:'0',role:'button','aria-label':label(id)+' を表示または展開',...(hasInputs?{'aria-expanded':String(!collapsed)}:{}),'data-id':id,'data-kind':nodeKind(id)});
 g.addEventListener('click',()=>choose(id,true));g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose(id,true);}});
 svgEl('rect',{width:NODE_W,height:NODE_H,rx:12,ry:12,fill:nodeColors(id).fill,stroke:nodeColors(id).color,'stroke-dasharray':nodeKind(id)==='unknown'?'5 3':'none',class:'node-card'},g);
 svgEl('rect',{width:4,height:NODE_H-18,x:0,y:9,rx:2,fill:nodeColors(id).color},g);
@@ -108,18 +116,18 @@ svgText(g,29,18,id,'node-id');
 svgText(g,17,38,shorten(label(id),eq?16:16),'node-text');
 svgText(g,17,57,shorten(symbol(id)||'',23),'node-symbol');
 svgText(g,17,79,eq?'数式 / '+shorten(d['原典_式番号']||'式番号未記載',18):nodeColors(id).label,'node-sub');
-if((children.get(id)||[]).length){svgEl('circle',{cx:NODE_W-20,cy:38,r:12,class:'toggleCircle'},g);svgText(g,NODE_W-20,39,collapsed?'+':'−','toggleText');}
+if(hasInputs){svgEl('circle',{cx:NODE_W-20,cy:38,r:12,class:'toggleCircle'},g);svgText(g,NODE_W-20,39,collapsed?'+':'−','toggleText');}
 }
 $('counter').textContent=`表示中：${scene.positions.size}ノード / ${scene.edges.length}接続`;
 $('notice').textContent=kindFilter?kinds[kindFilter].label+' を強調（全項目を見るには全展開）':emphasize?'要調査・未決事項のあるノードを強調表示中':`${scene.positions.size}個のノードを表示中 · 選択した項目をクリックして展開／折り畳み`;
 applyTransform();}
 function applyTransform(){vp.setAttribute('transform',`translate(${pan.x},${pan.y}) scale(${scale})`);}
 function fitAll(){const w=stage.clientWidth||900,h=stage.clientHeight||600;scale=Math.max(.08,Math.min(1.05,(w-72)/scene.width,(h-85)/scene.height));pan.x=(w-scene.width*scale)/2;pan.y=(h-scene.height*scale)/2;applyTransform();}
-function focusNode(id){const p=scene.positions.get(id);if(!p)return;const w=stage.clientWidth,h=stage.clientHeight;scale=Math.max(.6,Math.min(.98,scale));pan.x=w*(direction==='LR'?.31:.5)-(p.x+NODE_W/2)*scale;pan.y=h*(direction==='LR'?.5:.34)-(p.y+NODE_H/2)*scale;applyTransform();}
-function choose(id,toggle){selected=id;if(toggle&&(children.get(id)||[]).length){if(expanded.has(id))expanded.delete(id);else expanded.add(id);}drawGraph();renderDetail();focusNode(id);}
-function findPath(roots,id){const queue=roots.map(r=>[r,[r]]),seen=new Set(roots);for(let i=0;i<queue.length;i++){const [head,path]=queue[i];if(head===id)return path;for(const c of children.get(head)||[])if(!seen.has(c)){seen.add(c);queue.push([c,[...path,c]]);}}return null;}
-function reveal(id){let path=findPath(activeRoots(),id);if(!path){path=findPath(model.roots,id);if(path){root=path[0];$('rootJump').value=root;expanded=new Set();}}if(path)for(const el of path.slice(0,-1))expanded.add(el);selected=id;drawGraph();renderDetail();focusNode(id);}
-function expandDepth(maxDepth){expanded=new Set();const q=activeRoots().map(id=>[id,0]),seen=new Set();for(let i=0;i<q.length;i++){const [id,dep]=q[i];if(seen.has(id))continue;seen.add(id);if(dep<maxDepth){expanded.add(id);for(const child of children.get(id)||[])q.push([child,dep+1]);}}selected=activeRoots()[0];drawGraph();renderDetail();fitAll();}
+function focusNode(id){const p=scene.positions.get(graphId(id));if(!p)return;const w=stage.clientWidth,h=stage.clientHeight;scale=Math.max(.6,Math.min(.98,scale));pan.x=w*(direction==='LR'?.31:.5)-(p.x+NODE_W/2)*scale;pan.y=h*(direction==='LR'?.5:.34)-(p.y+NODE_H/2)*scale;applyTransform();}
+function choose(id,toggle){selected=id;const node=graphId(id);if(toggle&&(graphChildren.get(node)||[]).length){if(expanded.has(node))expanded.delete(node);else expanded.add(node);}drawGraph();renderDetail();focusNode(id);}
+function findPath(roots,id){const queue=roots.map(r=>[r,[r]]),seen=new Set(roots);for(let i=0;i<queue.length;i++){const [head,path]=queue[i];if(head===id)return path;for(const c of graphChildren.get(head)||[])if(!seen.has(c)){seen.add(c);queue.push([c,[...path,c]]);}}return null;}
+function reveal(id){const node=graphId(id);let path=findPath(activeRoots(),node);if(!path){path=findPath(model.roots.map(graphId),node);if(path){root=model.roots.find(r=>graphId(r)===path[0]);$('rootJump').value=root;expanded=new Set();}}if(path)for(const el of path.slice(0,-1))expanded.add(el);selected=id;drawGraph();renderDetail();focusNode(id);}
+function expandDepth(maxDepth){expanded=new Set();const q=activeRoots().map(id=>[id,0]),seen=new Set();for(let i=0;i<q.length;i++){const [id,dep]=q[i];if(seen.has(id))continue;seen.add(id);if(dep<maxDepth){expanded.add(id);for(const child of graphChildren.get(id)||[])q.push([child,dep+1]);}}selected=activeRoots()[0];drawGraph();renderDetail();fitAll();}
 function keyval(key,value){return `<div class="detailrow"><div class="key">${esc(key)}</div><div class="val">${html(value??'—')}</div></div>`;}
 
 function formulaBlock(e){
@@ -143,10 +151,11 @@ function renderDetail(){
    if(prod)detail+='<div class="label">この変数を求める式 · '+esc(prod['式_ID'])+'</div>'+formulaBlock(prod);
    for(const [k,val] of [['記号',d['記号']],['定義',d['定義']],['単位',d['単位']],['台帳の役割',d['役割']],['取得方法',d['生成方法']],['生成式',d['生成式_ID']],['試験・外部I/O',d['試験法・外部I/O']],['既定値・Global値',d['既定値・Global値']],['Level 1',d['Level 1']],['Level 2',d['Level 2']],['Level 3',d['Level 3']],['位置',d['位置']],['範囲・符号',d['有効範囲・符号']],['欠測・例外処理',d['欠測・例外処理']]])if(val!==''&&val!==undefined)detail+=keyval(k,val);
  }
- const direct=children.get(selected)||[];
+ const direct=graphChildren.get(graphId(selected))||[];
  detail+=`<div class="section"><div class="label">必要な下位項目 · ${direct.length}</div>`+(direct.length?direct.map(x=>`<button class="tool" style="margin:0 5px 6px 0;white-space:normal;text-align:left;border-left:3px solid ${nodeColors(x).color}" data-jump="${esc(x)}">${esc(label(x))} ↗</button>`).join(''):'<div class="muted" style="font-size:12px">台帳に生成式・下位依存関係は登録されていません。取得方法を確認してください。</div>')+'</div>';
  $('overview').innerHTML=detail;
- if(eq){const conditions=tables.connections.filter(r=>r['式_ID']===selected&&(r['必須/任意']!=='必須'||r['条件_ID']));if(conditions.length)$('overview').insertAdjacentHTML('beforeend','<div class="section"><div class="label">接続の条件（台帳記載）</div>'+conditions.map(r=>keyval(r['入力変数_ID'],[r['必須/任意'],r['条件_ID'],r['関係種別']].filter(Boolean).join(' · '))).join('')+'</div>');}
+ const formulaId=eq?selected:d['生成式_ID'];
+ if(formulaId){const conditions=tables.connections.filter(r=>r['式_ID']===formulaId&&(r['必須/任意']!=='必須'||r['条件_ID']));if(conditions.length)$('overview').insertAdjacentHTML('beforeend','<div class="section"><div class="label">接続の条件（台帳記載）</div>'+conditions.map(r=>keyval(r['入力変数_ID'],[r['必須/任意'],r['条件_ID'],r['関係種別']].filter(Boolean).join(' · '))).join('')+'</div>');}
  $('overview').querySelectorAll('[data-jump]').forEach(b=>b.onclick=()=>reveal(b.dataset.jump));
  $('overview').querySelectorAll('[data-large]').forEach(b=>b.onclick=()=>showFormula(b.dataset.large));
  const src=tables.sources.find(x=>x['出典_ID']===d['出典_ID']);
@@ -164,7 +173,7 @@ function showInventory(){
 function search(){const q=$('search').value.trim().toLowerCase();if(!q){$('results').replaceChildren();return;}const list=[...all].filter(([id,d])=>(id+' '+label(id)+' '+symbol(id)+' '+(E.has(id)?d['式本文']:d['定義']||'')).toLowerCase().includes(q)).slice(0,12);$('results').innerHTML=list.length?list.map(([id])=>`<button class="result" data-id="${esc(id)}">${esc(label(id))} <span>${esc(id)} · ${esc(symbol(id))}</span></button>`).join(''):'<div style="padding:15px;color:#9cb2c7;font-size:12px">該当する項目なし</div>';$('results').querySelectorAll('[data-id]').forEach(x=>x.addEventListener('click',()=>{reveal(x.dataset.id);$('search').value='';$('results').replaceChildren();}));}
 $('search').addEventListener('input',search);$('search').addEventListener('keydown',e=>{if(e.key==='Escape'){$('results').replaceChildren();e.target.blur();}else if(e.key==='Enter'){const target=$('results').querySelector('[data-id]');if(target)target.click();}});
 $('home').onclick=()=>loadModel(modelCode);$('open2').onclick=()=>expandDepth(2);$('open4').onclick=()=>expandDepth(4);$('openAll').onclick=()=>expandDepth(999);
-$('rootJump').onchange=()=>{root=$('rootJump').value;expandDepth(2);};
+$('rootJump').onchange=()=>{root=$('rootJump').value;expandDepth(1);};
 $('toggleInspector').onclick=()=>{const pane=$('inspector');pane.hidden=!pane.hidden;$('toggleInspector').textContent=pane.hidden?'詳細を表示':'詳細を隠す';$('toggleInspector').setAttribute('aria-expanded',String(!pane.hidden));requestAnimationFrame(fitAll);};
 $('lr').onclick=()=>{direction='LR';$('lr').classList.add('active');$('tb').classList.remove('active');drawGraph();fitAll()};$('tb').onclick=()=>{direction='TB';$('tb').classList.add('active');$('lr').classList.remove('active');drawGraph();fitAll()};
 $('needs').onclick=()=>{emphasize=!emphasize;$('needs').classList.toggle('active',emphasize);drawGraph()};$('fit').onclick=fitAll;$('zoomfit').onclick=fitAll;
